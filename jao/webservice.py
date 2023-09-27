@@ -30,22 +30,33 @@ class JaoAPIClient:
 
     def query_auction_details_by_month(self, corridor: str, month: date, shadow_auctions_only: bool = False) -> dict:
         """
-        get the auction data for a specified month. gives basically everything but the bids themselves
+        get the auction data for a specified horizon. gives basically everything but the bids themselves
 
         :param shadow_auctions_only: wether to only retrieve shadow auction results
         :param corridor: string of a valid jao corridor from query_corridors
         :param month: datetime.date object for the month you want the auction data of
         :return:
         """
-        # prepare the specific input arguments needed, start day the day before the months begin
-        # end date the last day of the month
+        return self.query_auction_details_by_horizon(corridor, month, horizon="Monthly", shadow_auctions_only=shadow_auctions_only)
+
+    def query_auction_details_by_horizon(self, corridor: str, month: date, horizon: str, shadow_auctions_only: bool = False) -> dict:
+        """
+        get the auction data for a specified horizon. gives basically everything but the bids themselves
+
+        :param shadow_auctions_only: wether to only retrieve shadow auction results
+        :param corridor: string of a valid jao corridor from query_corridors
+        :param month: datetime.date object for the month you want the auction data of
+        :return:
+        """
+        # prepare the specific input arguments needed, start day is the day before the months begin
+        # end date is the last day of the month
 
         month_begin = month.replace(day=1)
         month_end = month.replace(day=monthrange(month.year, month.month)[1])
         r = self.s.get(self.BASEURL + 'getauctions', params={
             'corridor': corridor,
             'fromdate': (month_begin - timedelta(days=1)).strftime("%Y-%m-%d"),
-            'horizon': 'Monthly',
+            'horizon': horizon,
             'todate': month_end.strftime("%Y-%m-%d"),
             'shadow': int(shadow_auctions_only)
         })
