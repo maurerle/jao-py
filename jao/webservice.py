@@ -28,9 +28,9 @@ class JaoAPIClient:
         r.raise_for_status()
         return [x['value'] for x in r.json()]
 
-    def query_auction_details(self, corridor: str, query_date: date, horizon: str, shadow_auctions_only: bool = False) -> dict:
+    def query_auction_details(self, corridor: str, date_from: date, date_to: date, horizon: str, shadow_auctions_only: bool = False) -> dict:
         """
-        get the auction data for a specified month. gives basically everything but the bids themselves
+        get the auction data for a specified corridor. gives basically everything but the bids themselves
 
         :param shadow_auctions_only: wether to only retrieve shadow auction results
         :param corridor: string of a valid jao corridor from query_corridors
@@ -54,14 +54,15 @@ class JaoAPIClient:
         elif horizon == 'Yearly':
             r = self.s.get(self.BASEURL + 'getauctions', params={
                 'corridor': corridor,
-                'fromdate': f"{query_date.year-1}-12-31",
+                'fromdate': f"{date_from.year-1}-12-31",
                 'horizon': horizon,
                 'shadow': int(shadow_auctions_only)
             })
         else:
             r = self.s.get(self.BASEURL + 'getauctions', params={
                 'corridor': corridor,
-                'fromdate': query_date.strftime("%Y-%m-%d-%H:%M:%S"),
+                'fromdate': date_from.strftime("%Y-%m-%d-%H:%M:%S"),
+                'todate': date_to.strftime("%Y-%m-%d"),
                 'horizon': horizon,
                 'shadow': int(shadow_auctions_only)
             })
@@ -73,15 +74,27 @@ class JaoAPIClient:
 
         data = r.json()
         # prettify the results to only show the first products and results
-        data = data[0]
-        data = {**data, **data['results'][0], **data['products'][0]}
+        res = {x["identification"]: x["results"] for x in data}
+        ps = {x["identification"]: x["products"] for x in data}
+        products = pd.DataFrame()
+        for ident, auction_products in ps.items():
+            df = pd.DataFrame(auction_products)
+            df["id"] = ident
+            products = pd.concat([products, df])
+
+        results = pd.DataFrame()
+        for ident, auction_results in res.items():
+            df = pd.DataFrame(auction_results)
+            df["id"] = ident
+            results = pd.concat([results, df])
+
         del data['results']
         del data['products']
 
-        return data
+        return data, products, results
 
     def query_auction_details_by_month(self, corridor: str, query_date: date, horizon="Monthly", shadow_auctions_only: bool = False) -> dict:
-        data = self.query_auction_details(corridor, query_date, horizon, shadow_auctions_only)
+        data = self.query_auction_details(corridor, date_from=query_date, date_to=query_date+relativedelta(month=1), horizon=horizon, shadow_auctions_only=shadow_auctions_only)
         return data
 
     def query_auction_bids_by_month(self, corridor: str, month: date, as_dict: bool = False) -> Union[pd.DataFrame, dict]:
@@ -146,44 +159,42 @@ class JaoAPIClient:
         non allocated capacity (MW)
         in this order
 
-        :param month_from: datetime.date object of start month
-        :param month_to: datetime.date object of end month
+        :param date_from: datetime.date object of start month
+        :param date_from: datetime.date object of end month
         :param corridor: string of a valid jao corridor from query_corridors
         :param horizon: string of a valid jao horizon from query_horizons
         :return:
         """
-        detail_keys = ['bidGateOpening', 'bidGateClosure', 'offeredCapacity', 'atc',
-                        'allocatedCapacity', 'resoldCapacity', 'requestedCapacity', 'auctionPrice']
-
         data = []
-        m = date_from
-        while m <= date_to:
-            m_details = self.query_auction_details(corridor=corridor, query_date=m, horizon=horizon)
-            m_data = {
-                'id': m_details['identification'],
-                'corridor': corridor,
-                'date': m
-            }
-            m_data = {**m_data, **{k: v for k, v in m_details.items() if k in detail_keys}}
-            data.append(m_data)
-
-            if horizon == "Weekly":
-                m += relativedelta(weeks=1)
-            elif horizon == "Daily":
-                m += relativedelta(days=1)
-            elif horizon == "Monthly":
-                m += relativedelta(months=1)
-            elif horizon == "Yearly":
-                m += relativedelta(years=1)
-            elif horizon == "Intraday":
-                m += relativedelta(hours=1)
-            else:
-                m += relativedelta(days=7)
-        df = pd.DataFrame(data)
-        df['resoldCapacity'].astype(float).fillna(0, inplace=True)
-        df['nonAllocatedCapacity'] = df['offeredCapacity'] - df['allocatedCapacity']
-
-        return df
+        pbar = None
+        try:
+            from tqdm import tqdm
+            pbar = tqdm(total=(date_to - date_from).total_seconds()/3600)
+        except ImportError:
+            pass
+        import dateutil.rrule as rr
+        starts = list(rr.rrule(rr.MONTHLY, bymonthday=1, dtstart=date_from, until=date_to))
+        starts.insert(0, date_from)
+        if starts[-1] != date_to:
+            starts.append(date_to)
+        all_data = pd.DataFrame()
+        all_products = pd.DataFrame()
+        all_results = pd.DataFrame()
+        for i in range(len(starts) - 1):
+            from_date = starts[i]
+            to_date = starts[i+1]
+            data, products, results = self.query_auction_details(corridor=corridor, date_from=from_date, date_to=to_date, horizon=horizon)
+            # todo extract date from auction ID
+            delta = relativedelta(months=1)
+            # can query at max 31 days
+            if pbar:
+                secs = (m + delta - m).total_seconds()
+                pbar.update(secs/3600)
+            m += delta
+            all_data = pd.concat([all_data, data])
+            all_products = pd.concat([all_products, products])
+            all_results = pd.concat([all_results, results])
+        return all_data, all_products, all_results
 
     def query_auction_stats_months(self, month_from: date, month_to: date, corridor: str, horizon: str = 'Monthly') -> pd.DataFrame:
         month_from = month_from.replace(day=1)
